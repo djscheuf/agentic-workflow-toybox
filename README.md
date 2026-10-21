@@ -14,6 +14,14 @@ The goal is to give developers a working example they can read, understand, and 
 
 The example follows the beginning of a software delivery process: extract a requirement, enrich its analysis, then grade its readiness before allowing further work. The skills were drawn from a larger repository that took a different approach to orchestration. The evaluation examples included here illustrate how to test the individual skills; they are not the complete evaluation history or proof of production readiness.
 
+## Quick start
+
+```sh
+node workflow.js docs/example_story.md
+```
+
+This will run the workflow on the provided example and generate the associated files. 
+
 ## Workflow overview
 
 The entire orchestrator lives in [`workflow.js`](workflow.js).
