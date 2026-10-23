@@ -209,11 +209,11 @@
 <pre><code>node workflow.js &lt;input-file&gt;
 
 # Optional: point at a different Devin binary (defaults to "devin")
-DEVIN_BIN=/path/to/devin node workflow.js docs/add-two-positive-integers.md</code></pre>
+DEVIN_BIN=/path/to/devin node workflow.js docs/example_story.md</code></pre>
 
 <h2>Pipeline at a glance</h2>
 <div class="pipeline" role="img" aria-label="Pipeline: setup, then extract-story-intent, analyze-story, grade-story-analysis, then score gate, ending in continue or punch out">
-  <div class="stage"><strong>Setup</strong><small>Validate input path</small></div>
+  <div class="stage"><strong>Setup</strong><small>Validate input path, create per-story folder</small></div>
   <div class="arrow">&rarr;</div>
   <div class="stage agent"><strong>extract-story-intent</strong><small>Agent call, writes <code>*.intent.json</code></small></div>
   <div class="arrow">&rarr;</div>
@@ -276,29 +276,26 @@ DEVIN_BIN=/path/to/devin node workflow.js docs/add-two-positive-integers.md</cod
 </p>
 <ol class="steps">
   <li>
-    <strong>Builds the prompt.</strong> The prompt asks the agent to invoke the skill with the same name as the step, on the input file. It tells the agent to write its output JSON and <code>.process/</code> sentinel into the per-story folder rather than beside the input, and to regenerate its output even if one already exists, so stale results are never reused.
+    <strong>Builds the prompt.</strong> The prompt asks the agent to invoke the skill with the same name as the step, on the input file. It also gives the exact output path and tells the agent to write its <code>.process/</code> sentinel into the per-story folder rather than beside the input.
   </li>
   <li>
-    <strong>Snapshots the folder.</strong> It records the modification time of every file in the per-story output folder that matches the expected output type, such as every <code>*.intent.json</code> file.
+    <strong>Sets the output path.</strong> Each step has one fixed file name inside the per-story folder: <code>intent.json</code>, <code>analysis.json</code>, or <code>analysis-grade.json</code>. A rerun overwrites that file in place, so a stale result from an earlier run is never mistaken for the current output.
   </li>
   <li>
     <strong>Launches the CLI.</strong> It runs the following command synchronously, with output inherited from the terminal:
-    <pre><code>devin -p "invoke /&lt;skill&gt; on &lt;input&gt;. Write the output ... into &lt;story-folder&gt; ... Regenerate the output ..." \
+    <pre><code>devin -p "invoke /&lt;skill&gt; on &lt;input&gt;. Write the output JSON file to &lt;story-folder&gt;/&lt;output-file&gt; and the .process/ sentinel into &lt;story-folder&gt;, not beside the input." \
      --permission-mode dangerous \
      --respect-workspace-trust false \
      --export &lt;story-folder&gt;/.process/&lt;skill&gt;.atif.json</code></pre>
     The flags do the following: <code>--permission-mode dangerous</code> lets the agent write files, <code>--respect-workspace-trust false</code> is needed for non-interactive runs, and <code>--export</code> saves the conversation trace in ATIF format for later review and cost tracking.
   </li>
   <li>
-    <strong>Detects the output.</strong> It takes a second snapshot and compares it to the first. Any matching file whose modification time changed is treated as written by this run. If several were written, the most recently modified one is used. If none were written, the step fails.
-  </li>
-  <li>
-    <strong>Verifies the output.</strong> It checks that the file exists and is not empty. The step fails if either check does not pass.
+    <strong>Verifies the output.</strong> It checks that the fixed output path exists and is not empty. The step fails if either check does not pass. If the agent wrote its file somewhere else, the check fails.
   </li>
 </ol>
 
 <div class="callout">
-  The output file is found by modification time, not by name. The agent chooses the file name, and the script only requires that a file with the expected suffix changed during the run. The next step then takes that file as its input.
+  The output file is found by its fixed path, not by scanning the folder. The script chooses the file name, and the agent is told where to write it. The next step then takes that file as its input.
 </div>
 
 <h2 id="scoring">Scoring</h2>
@@ -359,7 +356,7 @@ DEVIN_BIN=/path/to/devin node workflow.js docs/add-two-positive-integers.md</cod
     <strong>Rerunning after a punch out.</strong> The script prints the rerun command after a PUNCH_OUT. Every run regenerates all three agentic outputs, so the earlier files are replaced and not reused.
   </li>
   <li>
-    <strong>Output discovery depends on timestamps.</strong> If another process writes a matching file into the same per-story folder during the run, the script may pick it up as this step's output. Per-story folders prevent different stories from colliding, but not a second process writing into the same story's folder.
+    <strong>Output location depends on the agent.</strong> The script does not scan for the output. If the agent writes the file to a different path, or not at all, the verify step fails. Per-story folders keep different stories apart, but two runs on the same story still share a folder and will overwrite each other's files.
   </li>
 </ul>
 
