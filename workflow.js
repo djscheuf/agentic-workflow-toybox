@@ -36,21 +36,32 @@ if (!fs.statSync(inputPath).isFile()) {
   fail('setup', `input path is not a file: ${inputPath}`);
 }
 
-const outputPath = inputPath.replace(/(\.[^.]*)?$/, '.out$1');
-console.log(`[setup] input file verified: ${inputPath}`);
-console.log(`[setup] expected output file: ${outputPath}`);
+// Each story gets its own output folder, docs/<stem>/, so runs on different
+// stories sharing an input directory cannot collide. The input file is never moved.
+const stem = path.basename(inputPath, path.extname(inputPath));
+const runFolder = path.join(path.dirname(inputPath), stem);
+fs.mkdirSync(runFolder, { recursive: true });
 
-return { inputPath, outputPath };
+console.log(`[setup] input file verified: ${inputPath}`);
+console.log(`[setup] per-story output folder: ${runFolder}`);
+
+return { inputPath, runFolder };
 }
 
 
-function agenticCall(skillName, inputPath, expectedOutputFileType){
+function agenticCall(skillName, inputPath, outputFolder, outputFileName){
+  // The orchestrator dictates the exact output path. Each story has its own
+  // folder and each step a fixed filename, so a rerun overwrites its own
+  // output in place. No directory scan or mtime comparison is needed to find
+  // the file, and no stale file from an earlier run can be mistaken for this
+  // run's output.
+  const outputPath = path.join(outputFolder, outputFileName);
   const prompt = [
     `invoke /${skillName} on ${inputPath}.`,
+    `Write the output JSON file to ${outputPath} and the .process/ sentinel into ${outputFolder}, not beside the input.`,
   ].join(' ');
 
-  const inputFolder = path.dirname(inputPath);
-  const tracePath = path.join(inputFolder,".process/", `${skillName}.atif.json`);
+  const tracePath = path.join(outputFolder, ".process/", `${skillName}.atif.json`);
   console.log('[agent] invoking devin-cli (headless)...');
   console.log(`[agent] ATIF trace will be exported to: ${tracePath}`);
 
@@ -73,19 +84,9 @@ function agenticCall(skillName, inputPath, expectedOutputFileType){
   }
 
   console.log('[agent] devin-cli completed successfully');
+  console.log(`[agent] expected output file: ${outputPath}`);
 
-  const inputDir = path.dirname(inputPath);
-  const expectedOutputPath = path.join(inputDir, `*.${expectedOutputFileType}`);
-  const files = fs.readdirSync(inputDir).filter(file => file.endsWith(`.${expectedOutputFileType}`));
-
-  if (files.length === 0) {
-    fail('agent', `no output file with type .${expectedOutputFileType} found in ${inputDir}`);
-  }
-
-  const foundOutputPath = path.join(inputDir, files[0]);
-  console.log(`[agent] found output file: ${foundOutputPath}`);
-
-  return foundOutputPath;
+  return outputPath;
 }
 
 function verify(outputPath){
@@ -111,6 +112,8 @@ const GRADE_DIMENSIONS = {
   dependencies: 0.10,
 };
 const SCORE_THRESHOLD = 80;
+// Distinct from 1 (error) so callers can tell "story needs work" from "pipeline broke".
+const PUNCH_OUT_EXIT_CODE = 2;
 
 const computeScore = (gradeFilePath) => {
   const grade = JSON.parse(fs.readFileSync(gradeFilePath, 'utf8'));
@@ -126,7 +129,8 @@ const computeScore = (gradeFilePath) => {
   for (const [dim, weight] of Object.entries(GRADE_DIMENSIONS)) {
     weighted += grade[dim].score * weight;
   }
-  const normalized = (weighted / 3) * 100;
+  // Round to two decimals, matching the printed score, so float noise (e.g. 79.99999999999999) cannot flip the gate.
+  const normalized = Math.round((weighted / 3) * 100 * 100) / 100;
 
   console.log(`[score] Overall Score: ${normalized.toFixed(2)} / 100`);
 
@@ -143,11 +147,16 @@ const computeScore = (gradeFilePath) => {
   const decision = passed ? 'CONTINUE' : 'PUNCH_OUT';
   console.log(`[score] decision: ${decision} (threshold: ${SCORE_THRESHOLD})`);
 
-  return { success: passed, output: passed ? gradeFilePath : null };
+  return {
+    success: passed,
+    score: normalized,
+    gate: passed ? null : 'PUNCH_OUT',
+    output: gradeFilePath,
+  };
 };
 
-const createAgenticWorkflowStep = (stepName, expectedOutputFileType) => (inputPath) => {
-  const outputPath = agenticCall(stepName, inputPath, expectedOutputFileType);
+const createAgenticWorkflowStep = (stepName, outputFileName) => (inputPath, outputFolder) => {
+  const outputPath = agenticCall(stepName, inputPath, outputFolder, outputFileName);
   return {success: verify(outputPath), outputPath};
 };
 
@@ -166,13 +175,19 @@ const steps = {
 };
 
 function workflow(inputPath){
-  const { outputPath } = setupValidation(inputPath);
+  const { runFolder } = setupValidation(inputPath);
 
   let currentInputPath = inputPath;
   let currentStep = 'extract-story-intent';
 
   while(currentStep !== null){
-    const result = steps[currentStep](currentInputPath);
+    const result = steps[currentStep](currentInputPath, runFolder);
+    if (result.gate === 'PUNCH_OUT') {
+      // A low score is a decision, not a failure: the story needs revision.
+      console.log(`[workflow] stopped at score gate: ${result.score.toFixed(2)} is below the ${SCORE_THRESHOLD} threshold.`);
+      console.log(`[workflow] revise the story using the recommendations above, then rerun: node workflow.js ${inputPath}`);
+      process.exit(PUNCH_OUT_EXIT_CODE);
+    }
     if(!result.success){
       fail('workflow', `step ${currentStep} failed`);
       break;
