@@ -17,9 +17,9 @@ fi
 # ── JSON helpers ──────────────────────────────────────────────────────────────
 
 # Read stdin once and cache it (hooks receive JSON on stdin)
-# Declare as global to persist across subshells
-declare -g _STDIN_CACHE=""
-declare -g _STDIN_READ=false
+# Top-level assignments are global when sourced; `declare -g` needs bash 4.2+
+_STDIN_CACHE=""
+_STDIN_READ=false
 
 # Initialize stdin cache on first load
 _init_stdin_cache() {

@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>workflow.js: How the Story Pipeline Works</title>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --surface: #ffffff;
+    --text: #1d1d1f;
+    --muted: #5c5c63;
+    --border: #d9d9de;
+    --accent: #2563eb;
+    --accent-soft: #e8efff;
+    --ok: #15803d;
+    --ok-soft: #e7f6ec;
+    --warn: #b45309;
+    --warn-soft: #fdf3e4;
+    --code-bg: #f0f0f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141416;
+      --surface: #1c1c1f;
+      --text: #ececef;
+      --muted: #a1a1aa;
+      --border: #34343a;
+      --accent: #7aa2ff;
+      --accent-soft: #1f2a44;
+      --ok: #4ade80;
+      --ok-soft: #13291c;
+      --warn: #fbbf24;
+      --warn-soft: #2e2412;
+      --code-bg: #26262b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141416;
+    --surface: #1c1c1f;
+    --text: #ececef;
+    --muted: #a1a1aa;
+    --border: #34343a;
+    --accent: #7aa2ff;
+    --accent-soft: #1f2a44;
+    --ok: #4ade80;
+    --ok-soft: #13291c;
+    --warn: #fbbf24;
+    --warn-soft: #2e2412;
+    --code-bg: #26262b;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 40px 16px 64px;
+  }
+  header h1 { font-size: 2rem; margin: 0 0 8px; line-height: 1.2; }
+  header p { color: var(--muted); margin: 0; }
+  h2 {
+    font-size: 1.35rem;
+    margin: 48px 0 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 { font-size: 1.05rem; margin: 24px 0 8px; }
+  p, li { max-width: 72ch; }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9em;
+  }
+  code {
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  pre {
+    background: var(--code-bg);
+    padding: 14px 16px;
+    border-radius: 8px;
+    overflow-x: auto;
+    line-height: 1.45;
+  }
+  pre code { background: none; padding: 0; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin: 16px 0;
+  }
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin: 16px 0;
+  }
+  .callout.warn {
+    border-left-color: var(--warn);
+    background: var(--warn-soft);
+  }
+
+  /* Pipeline diagram */
+  .pipeline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 8px;
+    margin: 20px 0;
+  }
+  .stage {
+    flex: 1 1 150px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    text-align: center;
+    font-size: 0.9rem;
+  }
+  .stage strong { display: block; font-size: 0.95rem; margin-bottom: 4px; }
+  .stage small { color: var(--muted); }
+  .stage.agent { border-color: var(--accent); }
+  .stage.gate { border-color: var(--warn); }
+  .stage.done { border-color: var(--ok); }
+  .arrow {
+    align-self: center;
+    color: var(--muted);
+    font-size: 1.2rem;
+  }
+  .branch {
+    margin: 4px 0 0;
+    font-size: 0.9rem;
+    color: var(--muted);
+    width: 100%;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 0.95rem;
+    background: var(--surface);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { background: var(--code-bg); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  td:last-child, th:last-child { white-space: nowrap; }
+  .table-wrap { overflow-x: auto; }
+
+  .badge {
+    display: inline-block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    margin-right: 6px;
+  }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); }
+  .badge.warn { background: var(--warn-soft); color: var(--warn); }
+
+  ol.steps { padding-left: 22px; }
+  ol.steps > li { margin-bottom: 14px; }
+
+  footer {
+    margin-top: 56px;
+    color: var(--muted);
+    font-size: 0.85rem;
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+  }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>workflow.js</h1>
+  <p>How the story pipeline runs, step by step, and what each stage does with its files.</p>
+</header>
+
+<h2>Overview</h2>
+<p>
+  <code>workflow.js</code> takes a user story file and passes it through three agentic analysis steps, each run as a headless Devin CLI call.
+  It then computes a weighted quality score from the final grade. If the score clears the threshold, the workflow completes.
+  If not, the workflow stops and tells the author to revise the story.
+</p>
+<p>
+  The file's header comment describes three stages (setup, agentic, results). In practice the agentic stage runs three times in sequence, and a scoring gate follows them.
+</p>
+
+<h2>Usage</h2>
+<pre><code>node workflow.js &lt;input-file&gt;
+
+# Optional: point at a different Devin binary (defaults to "devin")
+DEVIN_BIN=/path/to/devin node workflow.js docs/add-two-positive-integers.md</code></pre>
+
+<h2>Pipeline at a glance</h2>
+<div class="pipeline" role="img" aria-label="Pipeline: setup, then extract-story-intent, analyze-story, grade-story-analysis, then score gate, ending in continue or punch out">
+  <div class="stage"><strong>Setup</strong><small>Validate input path</small></div>
+  <div class="arrow">&rarr;</div>
+  <div class="stage agent"><strong>extract-story-intent</strong><small>Agent call, writes <code>*.intent.json</code></small></div>
+  <div class="arrow">&rarr;</div>
+  <div class="stage agent"><strong>analyze-story</strong><small>Agent call, writes <code>*.analysis.json</code></small></div>
+  <div class="arrow">&rarr;</div>
+  <div class="stage agent"><strong>grade-story-analysis</strong><small>Agent call, writes <code>*.analysis-grade.json</code></small></div>
+  <div class="arrow">&rarr;</div>
+  <div class="stage gate"><strong>score</strong><small>Weighted score vs. threshold 80</small></div>
+  <div class="arrow">&rarr;</div>
+  <div class="stage done"><strong>Complete</strong><small>Score at or above 80</small></div>
+  <p class="branch">If the score is below 80, the workflow stops with exit code 2 (PUNCH_OUT) instead of completing.</p>
+</div>
+
+<h2>Stage by stage</h2>
+
+<ol class="steps">
+  <li>
+    <h3><span class="badge">1</span>Setup <code>setupValidation()</code></h3>
+    <p>
+      Resolves the input path and checks that it exists and is a regular file. If either check fails, the script exits with an error.
+      On success it logs the input path and the expected output path, which is the input name with <code>.out</code> inserted before the extension.
+      The expected output path is only logged. The rest of the pipeline finds outputs by modification time, not by this path.
+    </p>
+  </li>
+
+  <li>
+    <h3><span class="badge agent">2</span>Agentic step: <code>extract-story-intent</code></h3>
+    <p>
+      Reads the story and writes an <code>intent.json</code> file that captures what the story is trying to achieve.
+      The input is the original story file. The output becomes the input to step 3.
+    </p>
+  </li>
+
+  <li>
+    <h3><span class="badge agent">3</span>Agentic step: <code>analyze-story</code></h3>
+    <p>
+      Takes the intent file and writes an <code>analysis.json</code> file that evaluates the story.
+    </p>
+  </li>
+
+  <li>
+    <h3><span class="badge agent">4</span>Agentic step: <code>grade-story-analysis</code></h3>
+    <p>
+      Takes the analysis and writes an <code>analysis-grade.json</code> file. This file must contain a score and a reason for each dimension listed under <a href="#scoring">Scoring</a>.
+    </p>
+  </li>
+
+  <li>
+    <h3><span class="badge warn">5</span>Score gate <code>computeScore()</code></h3>
+    <p>
+      Reads the grade file, validates it, computes the weighted score, prints it, and decides whether the story passes.
+      This step does not call the agent. It is plain arithmetic on the grade file.
+    </p>
+  </li>
+</ol>
+
+<h2>How each agentic step runs</h2>
+<p>
+  Every agentic step goes through the same function, <code>agenticCall()</code>. It does the following:
+</p>
+<ol class="steps">
+  <li>
+    <strong>Builds the prompt.</strong> The prompt asks the agent to invoke the skill with the same name as the step, on the input file. It also tells the agent to regenerate its output even if one already exists, so stale results are never reused.
+  </li>
+  <li>
+    <strong>Snapshots the folder.</strong> It records the modification time of every file in the input's folder that matches the expected output type, such as every <code>*.intent.json</code> file.
+  </li>
+  <li>
+    <strong>Launches the CLI.</strong> It runs the following command synchronously, with output inherited from the terminal:
+    <pre><code>devin -p "invoke /&lt;skill&gt; on &lt;input&gt;. Regenerate the output ..." \
+     --permission-mode dangerous \
+     --respect-workspace-trust false \
+     --export &lt;input-folder&gt;/.process/&lt;skill&gt;.atif.json</code></pre>
+    The flags do the following: <code>--permission-mode dangerous</code> lets the agent write files, <code>--respect-workspace-trust false</code> is needed for non-interactive runs, and <code>--export</code> saves the conversation trace in ATIF format for later review and cost tracking.
+  </li>
+  <li>
+    <strong>Detects the output.</strong> It takes a second snapshot and compares it to the first. Any matching file whose modification time changed is treated as written by this run. If several were written, the most recently modified one is used. If none were written, the step fails.
+  </li>
+  <li>
+    <strong>Verifies the output.</strong> It checks that the file exists and is not empty. The step fails if either check does not pass.
+  </li>
+</ol>
+
+<div class="callout">
+  The output file is found by modification time, not by name. The agent chooses the file name, and the script only requires that a file with the expected suffix changed during the run. The next step then takes that file as its input.
+</div>
+
+<h2 id="scoring">Scoring</h2>
+<p>
+  The grade file must contain five dimensions. Each has a <code>score</code> from 0 to 3, a <code>reason</code>, and a <code>recommendation</code>. The script combines them using these weights:
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>Dimension</th><th>Weight</th><th>What it measures</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>business_value</code></td><td>0.25</td><td>Whether the story states a clear value to the business or user</td></tr>
+    <tr><td><code>scope</code></td><td>0.20</td><td>Whether the story is appropriately sized and bounded</td></tr>
+    <tr><td><code>acceptance_criteria</code></td><td>0.25</td><td>Whether the acceptance criteria are specific and testable</td></tr>
+    <tr><td><code>story_format</code></td><td>0.15</td><td>Whether the story follows the expected format</td></tr>
+    <tr><td><code>dependencies</code></td><td>0.10</td><td>Whether dependencies are identified</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  The overall score is <code>(sum of score × weight) / 3 × 100</code>, rounded to two decimals. The threshold is <strong>80</strong>.
+  For any dimension that scores 2 or lower, the script prints that dimension's reason and recommendation so the author knows what to fix.
+</p>
+
+<div class="callout warn">
+  <strong>Check this before relying on the score.</strong> The five weights add up to 0.95, not 1.00. Because the formula divides by 3 and not by the weight total, a story that scores 3 on every dimension tops out at 95 instead of 100. The threshold still works, but the score does not reach 100 and the ceiling is lower than the printed scale suggests. If the intent is a 0 to 100 scale, one weight needs to rise by 0.05, or the normalization needs to divide by the weight sum.
+</div>
+
+<h2>Exit codes</h2>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>Code</th><th>Meaning</th><th>Typical cause</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>0</td><td>Story passed</td><td>Score is at or above 80</td></tr>
+    <tr><td>1</td><td>Pipeline error</td><td>Missing argument or input file, Devin CLI failed to launch or exited non-zero, no output written, empty output, invalid grade file</td></tr>
+    <tr><td>2</td><td>PUNCH_OUT</td><td>Score is below 80. The story needs revision, which is a decision and not a failure</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  The separate exit code for PUNCH_OUT lets a calling script or CI job tell a weak story apart from a broken pipeline.
+</p>
+
+<h2>Notes and gotchas</h2>
+<ul>
+  <li>
+    <strong>Trace folder.</strong> The ATIF trace is written to <code>.process/</code> inside the input's folder. The script does not create that folder, so it must exist ahead of time or the CLI must create it.
+  </li>
+  <li>
+    <strong>Working directory.</strong> <code>spawnSync</code> is called with <code>cwd: path.dirname('.')</code>, which always evaluates to <code>.</code>. The CLI therefore runs in the directory where the script was launched, not in the input file's folder. The prompt uses the full input path, so this works, but the option does nothing.
+  </li>
+  <li>
+    <strong>Rerunning after a punch out.</strong> The script prints the rerun command after a PUNCH_OUT. Every run regenerates all three agentic outputs, so the earlier files are replaced and not reused.
+  </li>
+  <li>
+    <strong>Output discovery depends on timestamps.</strong> If another process writes a matching file in the same folder during the run, the script may pick it up as this step's output.
+  </li>
+</ul>
+
+<h2>Configuration</h2>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>Setting</th><th>Default</th><th>Purpose</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>DEVIN_BIN</code> (env)</td><td><code>devin</code></td><td>Path to the Devin CLI binary</td></tr>
+    <tr><td><code>SCORE_THRESHOLD</code></td><td><code>80</code></td><td>Minimum score to pass the gate (set in source)</td></tr>
+    <tr><td><code>GRADE_DIMENSIONS</code></td><td>See Scoring</td><td>Dimension weights used to compute the score (set in source)</td></tr>
+  </tbody>
+</table>
+</div>
+
+<footer>
+  Generated from <code>workflow.js</code> in the agentic-workflow-toybox repository.
+</footer>
+
+</main>
+</body>
+</html>

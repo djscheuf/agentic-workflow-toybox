@@ -44,15 +44,25 @@ return { inputPath, outputPath };
 }
 
 
+// Map of output file name -> mtime for every file of the given type in a folder.
+const outputMtimes = (dir, fileType) => new Map(
+  fs.readdirSync(dir)
+    .filter(file => file.endsWith(`.${fileType}`))
+    .map(file => [file, fs.statSync(path.join(dir, file)).mtimeMs]),
+);
+
 function agenticCall(skillName, inputPath, expectedOutputFileType){
   const prompt = [
     `invoke /${skillName} on ${inputPath}.`,
+    'Regenerate the output even if a file or completion sentinel already exists at the target path; do not reuse earlier outputs.',
   ].join(' ');
 
   const inputFolder = path.dirname(inputPath);
   const tracePath = path.join(inputFolder,".process/", `${skillName}.atif.json`);
   console.log('[agent] invoking devin-cli (headless)...');
   console.log(`[agent] ATIF trace will be exported to: ${tracePath}`);
+
+  const mtimesBefore = outputMtimes(inputFolder, expectedOutputFileType);
 
   const result = spawnSync(
     DEVIN_BIN,
@@ -74,15 +84,16 @@ function agenticCall(skillName, inputPath, expectedOutputFileType){
 
   console.log('[agent] devin-cli completed successfully');
 
-  const inputDir = path.dirname(inputPath);
-  const expectedOutputPath = path.join(inputDir, `*.${expectedOutputFileType}`);
-  const files = fs.readdirSync(inputDir).filter(file => file.endsWith(`.${expectedOutputFileType}`));
+  // Pick the output this run wrote (new or modified since before the call), not a stale file from an earlier run.
+  const mtimesAfter = outputMtimes(inputFolder, expectedOutputFileType);
+  const written = [...mtimesAfter].filter(([file, mtime]) => mtimesBefore.get(file) !== mtime);
 
-  if (files.length === 0) {
-    fail('agent', `no output file with type .${expectedOutputFileType} found in ${inputDir}`);
+  if (written.length === 0) {
+    fail('agent', `no .${expectedOutputFileType} file was written in ${inputFolder} during this run`);
   }
 
-  const foundOutputPath = path.join(inputDir, files[0]);
+  const [newestFile] = written.sort((a, b) => b[1] - a[1])[0];
+  const foundOutputPath = path.join(inputFolder, newestFile);
   console.log(`[agent] found output file: ${foundOutputPath}`);
 
   return foundOutputPath;
@@ -111,6 +122,8 @@ const GRADE_DIMENSIONS = {
   dependencies: 0.10,
 };
 const SCORE_THRESHOLD = 80;
+// Distinct from 1 (error) so callers can tell "story needs work" from "pipeline broke".
+const PUNCH_OUT_EXIT_CODE = 2;
 
 const computeScore = (gradeFilePath) => {
   const grade = JSON.parse(fs.readFileSync(gradeFilePath, 'utf8'));
@@ -126,7 +139,8 @@ const computeScore = (gradeFilePath) => {
   for (const [dim, weight] of Object.entries(GRADE_DIMENSIONS)) {
     weighted += grade[dim].score * weight;
   }
-  const normalized = (weighted / 3) * 100;
+  // Round to two decimals, matching the printed score, so float noise (e.g. 79.99999999999999) cannot flip the gate.
+  const normalized = Math.round((weighted / 3) * 100 * 100) / 100;
 
   console.log(`[score] Overall Score: ${normalized.toFixed(2)} / 100`);
 
@@ -143,7 +157,12 @@ const computeScore = (gradeFilePath) => {
   const decision = passed ? 'CONTINUE' : 'PUNCH_OUT';
   console.log(`[score] decision: ${decision} (threshold: ${SCORE_THRESHOLD})`);
 
-  return { success: passed, output: passed ? gradeFilePath : null };
+  return {
+    success: passed,
+    score: normalized,
+    gate: passed ? null : 'PUNCH_OUT',
+    output: gradeFilePath,
+  };
 };
 
 const createAgenticWorkflowStep = (stepName, expectedOutputFileType) => (inputPath) => {
@@ -173,6 +192,12 @@ function workflow(inputPath){
 
   while(currentStep !== null){
     const result = steps[currentStep](currentInputPath);
+    if (result.gate === 'PUNCH_OUT') {
+      // A low score is a decision, not a failure: the story needs revision.
+      console.log(`[workflow] stopped at score gate: ${result.score.toFixed(2)} is below the ${SCORE_THRESHOLD} threshold.`);
+      console.log(`[workflow] revise the story using the recommendations above, then rerun: node workflow.js ${inputPath}`);
+      process.exit(PUNCH_OUT_EXIT_CODE);
+    }
     if(!result.success){
       fail('workflow', `step ${currentStep} failed`);
       break;
