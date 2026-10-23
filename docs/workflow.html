@@ -234,8 +234,8 @@ DEVIN_BIN=/path/to/devin node workflow.js docs/add-two-positive-integers.md</cod
     <h3><span class="badge">1</span>Setup <code>setupValidation()</code></h3>
     <p>
       Resolves the input path and checks that it exists and is a regular file. If either check fails, the script exits with an error.
-      On success it logs the input path and the expected output path, which is the input name with <code>.out</code> inserted before the extension.
-      The expected output path is only logged. The rest of the pipeline finds outputs by modification time, not by this path.
+      On success it derives a per-story output folder, <code>docs/&lt;stem&gt;/</code>, from the input filename, creates it, and logs both the input path and that folder.
+      The input file itself is never moved. Every later step writes into this folder, so runs on different stories that share an input directory cannot collide.
     </p>
   </li>
 
@@ -276,17 +276,17 @@ DEVIN_BIN=/path/to/devin node workflow.js docs/add-two-positive-integers.md</cod
 </p>
 <ol class="steps">
   <li>
-    <strong>Builds the prompt.</strong> The prompt asks the agent to invoke the skill with the same name as the step, on the input file. It also tells the agent to regenerate its output even if one already exists, so stale results are never reused.
+    <strong>Builds the prompt.</strong> The prompt asks the agent to invoke the skill with the same name as the step, on the input file. It tells the agent to write its output JSON and <code>.process/</code> sentinel into the per-story folder rather than beside the input, and to regenerate its output even if one already exists, so stale results are never reused.
   </li>
   <li>
-    <strong>Snapshots the folder.</strong> It records the modification time of every file in the input's folder that matches the expected output type, such as every <code>*.intent.json</code> file.
+    <strong>Snapshots the folder.</strong> It records the modification time of every file in the per-story output folder that matches the expected output type, such as every <code>*.intent.json</code> file.
   </li>
   <li>
     <strong>Launches the CLI.</strong> It runs the following command synchronously, with output inherited from the terminal:
-    <pre><code>devin -p "invoke /&lt;skill&gt; on &lt;input&gt;. Regenerate the output ..." \
+    <pre><code>devin -p "invoke /&lt;skill&gt; on &lt;input&gt;. Write the output ... into &lt;story-folder&gt; ... Regenerate the output ..." \
      --permission-mode dangerous \
      --respect-workspace-trust false \
-     --export &lt;input-folder&gt;/.process/&lt;skill&gt;.atif.json</code></pre>
+     --export &lt;story-folder&gt;/.process/&lt;skill&gt;.atif.json</code></pre>
     The flags do the following: <code>--permission-mode dangerous</code> lets the agent write files, <code>--respect-workspace-trust false</code> is needed for non-interactive runs, and <code>--export</code> saves the conversation trace in ATIF format for later review and cost tracking.
   </li>
   <li>
@@ -350,7 +350,7 @@ DEVIN_BIN=/path/to/devin node workflow.js docs/add-two-positive-integers.md</cod
 <h2>Notes and gotchas</h2>
 <ul>
   <li>
-    <strong>Trace folder.</strong> The ATIF trace is written to <code>.process/</code> inside the input's folder. The script does not create that folder, so it must exist ahead of time or the CLI must create it.
+    <strong>Trace folder.</strong> The ATIF trace is written to <code>.process/</code> inside the per-story output folder. The script creates the per-story folder but not the <code>.process/</code> subfolder, so the agent or CLI must create that during the run.
   </li>
   <li>
     <strong>Working directory.</strong> <code>spawnSync</code> is called with <code>cwd: path.dirname('.')</code>, which always evaluates to <code>.</code>. The CLI therefore runs in the directory where the script was launched, not in the input file's folder. The prompt uses the full input path, so this works, but the option does nothing.
@@ -359,7 +359,7 @@ DEVIN_BIN=/path/to/devin node workflow.js docs/add-two-positive-integers.md</cod
     <strong>Rerunning after a punch out.</strong> The script prints the rerun command after a PUNCH_OUT. Every run regenerates all three agentic outputs, so the earlier files are replaced and not reused.
   </li>
   <li>
-    <strong>Output discovery depends on timestamps.</strong> If another process writes a matching file in the same folder during the run, the script may pick it up as this step's output.
+    <strong>Output discovery depends on timestamps.</strong> If another process writes a matching file into the same per-story folder during the run, the script may pick it up as this step's output. Per-story folders prevent different stories from colliding, but not a second process writing into the same story's folder.
   </li>
 </ul>
 

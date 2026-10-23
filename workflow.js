@@ -36,33 +36,34 @@ if (!fs.statSync(inputPath).isFile()) {
   fail('setup', `input path is not a file: ${inputPath}`);
 }
 
-const outputPath = inputPath.replace(/(\.[^.]*)?$/, '.out$1');
-console.log(`[setup] input file verified: ${inputPath}`);
-console.log(`[setup] expected output file: ${outputPath}`);
+// Each story gets its own output folder, docs/<stem>/, so runs on different
+// stories sharing an input directory cannot collide. The input file is never moved.
+const stem = path.basename(inputPath, path.extname(inputPath));
+const runFolder = path.join(path.dirname(inputPath), stem);
+fs.mkdirSync(runFolder, { recursive: true });
 
-return { inputPath, outputPath };
+console.log(`[setup] input file verified: ${inputPath}`);
+console.log(`[setup] per-story output folder: ${runFolder}`);
+
+return { inputPath, runFolder };
 }
 
 
-// Map of output file name -> mtime for every file of the given type in a folder.
-const outputMtimes = (dir, fileType) => new Map(
-  fs.readdirSync(dir)
-    .filter(file => file.endsWith(`.${fileType}`))
-    .map(file => [file, fs.statSync(path.join(dir, file)).mtimeMs]),
-);
-
-function agenticCall(skillName, inputPath, expectedOutputFileType){
+function agenticCall(skillName, inputPath, outputFolder, outputFileName){
+  // The orchestrator dictates the exact output path. Each story has its own
+  // folder and each step a fixed filename, so a rerun overwrites its own
+  // output in place. No directory scan or mtime comparison is needed to find
+  // the file, and no stale file from an earlier run can be mistaken for this
+  // run's output.
+  const outputPath = path.join(outputFolder, outputFileName);
   const prompt = [
     `invoke /${skillName} on ${inputPath}.`,
-    'Regenerate the output even if a file or completion sentinel already exists at the target path; do not reuse earlier outputs.',
+    `Write the output JSON file to ${outputPath} and the .process/ sentinel into ${outputFolder}, not beside the input.`,
   ].join(' ');
 
-  const inputFolder = path.dirname(inputPath);
-  const tracePath = path.join(inputFolder,".process/", `${skillName}.atif.json`);
+  const tracePath = path.join(outputFolder, ".process/", `${skillName}.atif.json`);
   console.log('[agent] invoking devin-cli (headless)...');
   console.log(`[agent] ATIF trace will be exported to: ${tracePath}`);
-
-  const mtimesBefore = outputMtimes(inputFolder, expectedOutputFileType);
 
   const result = spawnSync(
     DEVIN_BIN,
@@ -83,20 +84,9 @@ function agenticCall(skillName, inputPath, expectedOutputFileType){
   }
 
   console.log('[agent] devin-cli completed successfully');
+  console.log(`[agent] expected output file: ${outputPath}`);
 
-  // Pick the output this run wrote (new or modified since before the call), not a stale file from an earlier run.
-  const mtimesAfter = outputMtimes(inputFolder, expectedOutputFileType);
-  const written = [...mtimesAfter].filter(([file, mtime]) => mtimesBefore.get(file) !== mtime);
-
-  if (written.length === 0) {
-    fail('agent', `no .${expectedOutputFileType} file was written in ${inputFolder} during this run`);
-  }
-
-  const [newestFile] = written.sort((a, b) => b[1] - a[1])[0];
-  const foundOutputPath = path.join(inputFolder, newestFile);
-  console.log(`[agent] found output file: ${foundOutputPath}`);
-
-  return foundOutputPath;
+  return outputPath;
 }
 
 function verify(outputPath){
@@ -165,8 +155,8 @@ const computeScore = (gradeFilePath) => {
   };
 };
 
-const createAgenticWorkflowStep = (stepName, expectedOutputFileType) => (inputPath) => {
-  const outputPath = agenticCall(stepName, inputPath, expectedOutputFileType);
+const createAgenticWorkflowStep = (stepName, outputFileName) => (inputPath, outputFolder) => {
+  const outputPath = agenticCall(stepName, inputPath, outputFolder, outputFileName);
   return {success: verify(outputPath), outputPath};
 };
 
@@ -185,13 +175,13 @@ const steps = {
 };
 
 function workflow(inputPath){
-  const { outputPath } = setupValidation(inputPath);
+  const { runFolder } = setupValidation(inputPath);
 
   let currentInputPath = inputPath;
   let currentStep = 'extract-story-intent';
 
   while(currentStep !== null){
-    const result = steps[currentStep](currentInputPath);
+    const result = steps[currentStep](currentInputPath, runFolder);
     if (result.gate === 'PUNCH_OUT') {
       // A low score is a decision, not a failure: the story needs revision.
       console.log(`[workflow] stopped at score gate: ${result.score.toFixed(2)} is below the ${SCORE_THRESHOLD} threshold.`);
